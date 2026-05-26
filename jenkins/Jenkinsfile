@@ -27,12 +27,12 @@ pipeline {
         stage('Test locally') {
             steps {
                 dir('docker') {
-                    // Run it locally in background
-                    sh 'docker run -d --name test-app -p 8080:80 ${PROJECT_NAME}-app'
+                    // Run it locally in background using port 8085 to avoid conflict with Jenkins on 8080
+                    sh 'docker run -d --name test-app -p 8085:80 ${PROJECT_NAME}-app'
                     // Wait for it to start
                     sleep 5
                     // Check if it returns HTTP 200
-                    sh 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 | grep 200'
+                    sh 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8085 | grep 200'
                 }
             }
             post {
