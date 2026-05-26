@@ -26,20 +26,35 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Build Docker Image
+        run: |
+          cd docker
+          docker build -t ha-webapp-app .
+
+      - name: Test Docker Image Locally
+        run: |
+          docker run -d --name test-app -p 8080:80 ha-webapp-app
+          sleep 5
+          # Verify container responds with HTTP 200
+          curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 | grep 200
+
+      - name: Clean up Test Container
+        if: always()
+        run: |
+          docker rm -f test-app || true
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, Tag, and Push Image to ECR
+      - name: Tag and Push Image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.run_number }}
         run: |
-          # Build image from local docker folder
-          cd docker
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          
-          # Push both tags (latest and run number)
+          # Tag and push to ECR
+          docker tag ha-webapp-app $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker tag ha-webapp-app $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
