@@ -3,9 +3,10 @@ pipeline {
 
     environment {
         AWS_REGION = 'us-east-1'
-        // This will be read dynamically from Terraform output in a real setup
-        // But for simplicity, we assume terraform has been run in the terraform/ directory
         PROJECT_NAME = 'ha-webapp'
+        // AWS Credentials from Jenkins Credentials Store (create these as 'Secret text' credentials)
+        AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY_ID')
+        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
     }
 
     stages {
@@ -49,9 +50,7 @@ pipeline {
             steps {
                 script {
                     // Get the ECR URL from terraform
-                    dir('terraform') {
-                        env.ECR_URL = sh(script: "terraform output -raw ecr_repository_url", returnStdout: true).trim()
-                    }
+                    env.ECR_URL = sh(script: "terraform -chdir=/home/ajay/aws-ha-assessment/terraform output -raw ecr_repository_url", returnStdout: true).trim()
                     
                     // Login to ECR
                     sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_URL}"
@@ -68,9 +67,7 @@ pipeline {
         stage('Deploy to ASG (Instance Refresh)') {
             steps {
                 script {
-                    dir('terraform') {
-                        env.ASG_NAME = "${PROJECT_NAME}-asg"
-                    }
+                    env.ASG_NAME = "${PROJECT_NAME}-asg"
 
                     // Trigger an Instance Refresh on the ASG. 
                     // This forces the ASG to terminate old instances and bring up new ones,
