@@ -1,0 +1,90 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'us-east-1'
+        // This will be read dynamically from Terraform output in a real setup
+        // But for simplicity, we assume terraform has been run in the terraform/ directory
+        PROJECT_NAME = 'ha-webapp'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                // In a real scenario, this would checkout from Git. 
+                // Since Jenkins is local, we just use the local workspace if running a local job,
+                // or checkout scm if connected to a repo.
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                dir('docker') {
+                    sh 'docker build -t ${PROJECT_NAME}-app .'
+                }
+            }
+        }
+
+        stage('Test locally') {
+            steps {
+                dir('docker') {
+                    // Run it locally in background
+                    sh 'docker run -d --name test-app -p 8080:80 ${PROJECT_NAME}-app'
+                    // Wait for it to start
+                    sleep 5
+                    // Check if it returns HTTP 200
+                    sh 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 | grep 200'
+                }
+            }
+            post {
+                always {
+                    // Cleanup
+                    sh 'docker rm -f test-app || true'
+                }
+            }
+        }
+
+        stage('Push to AWS ECR') {
+            steps {
+                script {
+                    // Get the ECR URL from terraform
+                    dir('terraform') {
+                        env.ECR_URL = sh(script: "terraform output -raw ecr_repository_url", returnStdout: true).trim()
+                    }
+                    
+                    // Login to ECR
+                    sh "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_URL}"
+                    
+                    // Tag and push
+                    sh "docker tag ${PROJECT_NAME}-app:latest ${ECR_URL}:latest"
+                    sh "docker tag ${PROJECT_NAME}-app:latest ${ECR_URL}:${BUILD_NUMBER}"
+                    sh "docker push ${ECR_URL}:latest"
+                    sh "docker push ${ECR_URL}:${BUILD_NUMBER}"
+                }
+            }
+        }
+
+        stage('Deploy to ASG (Instance Refresh)') {
+            steps {
+                script {
+                    dir('terraform') {
+                        env.ASG_NAME = "${PROJECT_NAME}-asg"
+                    }
+
+                    // Trigger an Instance Refresh on the ASG. 
+                    // This forces the ASG to terminate old instances and bring up new ones,
+                    // which will run the user-data script and pull the `latest` image from ECR.
+                    echo "Starting Instance Refresh for ASG: ${ASG_NAME}"
+                    sh """
+                    aws autoscaling start-instance-refresh \
+                        --auto-scaling-group-name ${ASG_NAME} \
+                        --region ${AWS_REGION}
+                    """
+                    
+                    echo "Deployment initiated! The ASG will now replace instances one by one (Rolling Update) to ensure zero downtime."
+                }
+            }
+        }
+    }
+}
