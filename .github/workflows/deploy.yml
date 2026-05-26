@@ -1,3 +1,4 @@
+# CI/CD Pipeline: Build Docker image, test locally, push to ECR, refresh ASG
 name: Build and Deploy to AWS HA Architecture
 
 on:
