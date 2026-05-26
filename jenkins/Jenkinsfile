@@ -4,9 +4,6 @@ pipeline {
     environment {
         AWS_REGION = 'us-east-1'
         PROJECT_NAME = 'ha-webapp'
-        // AWS Credentials from Jenkins Credentials Store (create these as 'Secret text' credentials)
-        AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY_ID')
-        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
     }
 
     stages {
