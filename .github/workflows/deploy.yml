@@ -1,4 +1,4 @@
-# CI/CD Pipeline: Build Docker image, test locally, push to ECR, refresh ASG
+# CI/CD Pipeline: Checkout → Build → Test → Push to ECR → Deploy to ASG
 name: Build and Deploy to AWS HA Architecture
 
 on:
@@ -13,13 +13,89 @@ env:
   ASG_NAME: ha-webapp-asg
 
 jobs:
-  deploy:
-    name: Build, Push and Refresh ASG
-    runs-on: ubuntu-latest
 
+  # ─── Stage 1: Checkout ─────────────────────────────────────────────────────
+  checkout:
+    name: "Stage 1 — Checkout"
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Show commit info
+        run: |
+          echo "Branch  : ${{ github.ref_name }}"
+          echo "Commit  : ${{ github.sha }}"
+          echo "Triggered by: ${{ github.actor }}"
+
+  # ─── Stage 2: Build Docker Image ───────────────────────────────────────────
+  build:
+    name: "Stage 2 — Build Docker Image"
+    runs-on: ubuntu-latest
+    needs: checkout
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: |
+          cd docker
+          docker build -t ha-webapp-app .
+
+      - name: Save Docker image as artifact
+        run: |
+          docker save ha-webapp-app | gzip > ha-webapp-app.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: ha-webapp-app.tar.gz
+          retention-days: 1
+
+  # ─── Stage 3: Test Docker Image ────────────────────────────────────────────
+  test:
+    name: "Stage 3 — Test Docker Image"
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker image
+        run: gunzip -c ha-webapp-app.tar.gz | docker load
+
+      - name: Run container and health-check
+        run: |
+          docker run -d --name test-app -p 8080:80 ha-webapp-app
+          sleep 5
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080)
+          echo "HTTP response: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Health check FAILED — expected 200 but got $HTTP_CODE"
+            exit 1
+          fi
+          echo "Health check PASSED ✅"
+
+      - name: Cleanup test container
+        if: always()
+        run: docker rm -f test-app || true
+
+  # ─── Stage 4: Push to Amazon ECR ───────────────────────────────────────────
+  push:
+    name: "Stage 4 — Push to Amazon ECR"
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker image
+        run: gunzip -c ha-webapp-app.tar.gz | docker load
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -27,22 +103,6 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: Build Docker Image
-        run: |
-          cd docker
-          docker build -t ha-webapp-app .
-
-      - name: Test Docker Image Locally
-        run: |
-          docker run -d --name test-app -p 8080:80 ha-webapp-app
-          sleep 5
-          curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 | grep 200
-
-      - name: Clean up Test Container
-        if: always()
-        run: |
-          docker rm -f test-app || true
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -57,11 +117,26 @@ jobs:
           docker tag ha-webapp-app $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "Pushed image tags: latest and $IMAGE_TAG"
 
-      - name: Deploy to Auto Scaling Group (Instance Refresh)
+  # ─── Stage 5: Deploy to ASG (Rolling Update) ───────────────────────────────
+  deploy:
+    name: "Stage 5 — Deploy to ASG (Rolling Update)"
+    runs-on: ubuntu-latest
+    needs: push
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Start ASG Instance Refresh
         run: |
           echo "Starting Rolling Instance Refresh for ASG: ${{ env.ASG_NAME }}"
           aws autoscaling start-instance-refresh \
             --auto-scaling-group-name ${{ env.ASG_NAME }} \
             --region ${{ env.AWS_REGION }}
-          echo "Rolling update initiated successfully!"
+          echo "Rolling update initiated successfully! ✅"
+          echo "ALB DNS: ha-webapp-alb-1796492700.us-east-1.elb.amazonaws.com"
